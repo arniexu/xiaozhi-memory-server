@@ -14,7 +14,7 @@ settings = load_settings()
 memories = MemoryStore(settings.memory_db, settings.event_log)
 vectors = VectorStore(settings.vector_db)
 graph = Neo4jGraphStore(settings)
-app = FastAPI(title="Knowledge Agent Service", version="0.1.5")
+app = FastAPI(title="Knowledge Agent Service", version="0.1.6")
 
 
 class SearchRequest(BaseModel):
@@ -83,7 +83,16 @@ def search(request: SearchRequest) -> dict:
     if settings.neo4j_configured:
         try:
             graph_results = graph.search(request.query, limit=request.limit)
-            graph_results.extend(graph.document_links(limit=max(1, min(request.limit, 6))))
+            # 只注入与本次查询命中实体相关的文档对；查询没命中实体就不注入，
+            # 避免把全局 top-N 文档对当成“本次证据”塞给模型。
+            matched_entities = [
+                str(item["id"])
+                for item in graph_results
+                if item.get("type") == "graph:KnowledgeEntity" and item.get("id")
+            ]
+            graph_results.extend(
+                graph.document_links(limit=max(1, min(request.limit, 6)), entity_ids=matched_entities)
+            )
         except Exception as error:
             graph_error = type(error).__name__
     return {

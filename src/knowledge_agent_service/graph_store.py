@@ -442,19 +442,36 @@ class Neo4jGraphStore:
             ],
         }
 
-    def document_links(self, document_id: str = "", *, limit: int = 8) -> list[dict[str, Any]]:
+    def document_links(
+        self,
+        document_id: str = "",
+        *,
+        limit: int = 8,
+        entity_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Discover cross-document relationships from shared linked entities.
 
         This is the deterministic half of cross-document discovery: two documents
         become related as soon as they mention the same knowledge entity. It needs
         no model and stays explainable, because every link carries the shared
         entities and the source chunk evidence on both sides.
+
+        ``entity_ids`` scopes the result to pairs sharing one of these entities —
+        the entities the current query actually matched. An **empty list** means the
+        query matched no entity, so no link can be relevant and the result is empty;
+        without this the caller would inject the global top-N pairs into every
+        retrieval, regardless of the question. ``None`` keeps the unscoped
+        behaviour used by the standalone ``/v1/graph/document-links`` endpoint.
         """
+
+        if entity_ids is not None and not entity_ids:
+            return []
 
         cypher = """
             MATCH (a:Document)-[ma:MENTIONS]->(entity:KnowledgeEntity)<-[mb:MENTIONS]-(b:Document)
             WHERE a.id < b.id
               AND ($document_id = "" OR a.id = $document_id OR b.id = $document_id)
+              AND ($entity_ids = [] OR entity.id IN $entity_ids)
             WITH a, b,
                  count(DISTINCT entity) AS shared,
                  collect(DISTINCT entity.id)[0..8] AS entity_ids,
@@ -471,6 +488,7 @@ class Neo4jGraphStore:
             rows = session.run(
                 cypher,
                 document_id=document_id,
+                entity_ids=list(entity_ids or []),
                 limit=max(1, min(limit, 50)),
             ).data()
         return [self._document_link_result(row) for row in rows]

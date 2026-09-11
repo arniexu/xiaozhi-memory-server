@@ -87,12 +87,12 @@ class SearchApiTests(unittest.TestCase):
 class GraphApiTests(unittest.TestCase):
     """The graph endpoints write additively, so their defaults are part of the contract."""
 
-    def test_search_merges_cross_document_links_into_the_graph_array(self) -> None:
+    def test_search_scopes_document_links_to_entities_the_query_matched(self) -> None:
         memory_store = Mock()
         memory_store.search.return_value = []
         memory_store.get_many.return_value = []
         graph_store = Mock()
-        graph_store.search.return_value = [{"id": "graph-1"}]
+        graph_store.search.return_value = [{"id": "entity-1", "type": "graph:KnowledgeEntity"}]
         graph_store.document_links.return_value = [{"id": "document-link-1"}]
 
         with (
@@ -100,13 +100,31 @@ class GraphApiTests(unittest.TestCase):
             patch.object(api, "memories", memory_store),
             patch.object(api, "graph", graph_store),
         ):
-            result = api.search(api.SearchRequest(query="reset", limit=4))
+            result = api.search(api.SearchRequest(query="tsod", limit=4))
 
         self.assertEqual(
             [item["id"] for item in result["graph"]],
-            ["graph-1", "document-link-1"],
+            ["entity-1", "document-link-1"],
         )
-        graph_store.document_links.assert_called_once_with(limit=4)
+        graph_store.document_links.assert_called_once_with(limit=4, entity_ids=["entity-1"])
+
+    def test_search_injects_no_document_link_when_query_matches_no_entity(self) -> None:
+        memory_store = Mock()
+        memory_store.search.return_value = []
+        memory_store.get_many.return_value = []
+        graph_store = Mock()
+        graph_store.search.return_value = []
+        graph_store.document_links.return_value = []
+
+        with (
+            patch.object(api, "settings", SimpleNamespace(neo4j_configured=True)),
+            patch.object(api, "memories", memory_store),
+            patch.object(api, "graph", graph_store),
+        ):
+            result = api.search(api.SearchRequest(query="zzz qqq", limit=4))
+
+        self.assertEqual(result["graph"], [])
+        graph_store.document_links.assert_called_once_with(limit=4, entity_ids=[])
 
     def test_relink_defaults_to_dry_run_and_forwards_quality_switches(self) -> None:
         graph_store = Mock()

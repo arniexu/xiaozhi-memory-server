@@ -404,6 +404,11 @@ class Neo4jGraphStoreTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             Neo4jGraphStore(settings()).document_links()
 
+    def test_document_links_with_no_query_entities_returns_empty_without_querying(self) -> None:
+        # entity_ids=[] 表示“查询没有命中任何实体”：此时不应去查 Neo4j，直接返回空。
+        store = Neo4jGraphStore(settings())
+        self.assertEqual(store.document_links(entity_ids=[]), [])
+
     def test_relink_dry_run_reports_matches_without_writing(self) -> None:
         store = Neo4jGraphStore(settings("neo4j://127.0.0.1:7687", "neo4j", "auth-secret"))
 
