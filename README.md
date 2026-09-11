@@ -27,7 +27,7 @@ Imported PDFs do not stop at `Document`/`DocumentChunk` nodes. Two layers connec
 
 2. **Semantic extraction (caller supplied).** The service never calls a model. The VS Code extension reads document excerpts with the active chat model and posts the resulting entities, aliases, and relationships through the existing snapshot sync path, which reaches Neo4j through the same additive `upsert`.
 
-Because linking depends on the catalogue, `POST /v1/graph/relink` rebuilds `MENTIONS` edges for already stored chunks after the catalogue grows — no re-import needed. `POST /v1/graph/document-links` returns cross-document pairs derived from shared entities, and `/v1/search` appends the highest-scoring pairs to the `graph` array so retrieval sees them without a client change. Each pair carries the shared entity IDs and the source chunk evidence on both sides.
+Because linking depends on the catalogue, `POST /v1/graph/relink` rebuilds `MENTIONS` edges for already stored chunks after the catalogue grows — no re-import needed. `POST /v1/graph/document-links` returns cross-document pairs derived from shared entities, and `/v1/search` appends the highest-scoring pairs to the `graph` array so retrieval sees them without a client change. Each pair carries the shared entity IDs and the source chunk evidence on both sides. The `document-links` response always carries `links` and `count`, so a skipped or failed lookup is shaped exactly like an empty result.
 
 ### Link Quality And Safety
 

@@ -151,9 +151,9 @@ def document_links(request: RelinkRequest) -> dict:
     """Cross-document relationships implied by shared knowledge entities."""
 
     if not settings.neo4j_configured:
-        return {"skipped": True, "reason": "neo4j-not-configured", "links": []}
+        return {"skipped": True, "reason": "neo4j-not-configured", "links": [], "count": 0}
     try:
         links = graph.document_links(request.document_id)
     except Exception as error:
-        return {"error": type(error).__name__, "links": []}
+        return {"error": type(error).__name__, "links": [], "count": 0}
     return {"links": links, "count": len(links)}
