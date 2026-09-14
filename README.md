@@ -106,3 +106,33 @@ knowledge-agent-service migrate-extension /path/to/knowledge-agent.json --apply
 ```
 
 Add `--sync-neo4j` only when Neo4j credentials are configured. The migration verifies that the source file hash is unchanged and never deletes source or target records.
+
+## Legacy Database Guard
+
+Legacy Memory Agent SQLite databases must only be opened through `scripts/legacy-db-guard.py`, never with ad hoc Python or SQLite commands.
+
+Inspect a real legacy database read-only (safe on the live file — it is opened with `mode=ro&immutable=1`, `PRAGMA query_only=ON`, and verified unchanged by SHA-256 before and after):
+
+```bash
+python3 scripts/legacy-db-guard.py inspect --source /path/to/copilot-kb/memory.sqlite3
+```
+
+The report contains only aggregate metadata (source path, SHA-256, size, row counts, `status`/`memory_kind`/`loading_policy` distributions, and evidence/source/workspace/repo coverage counts). It never prints stored summary, resolution, context, or evidence content.
+
+`apply` is a safety proxy for the future legacy migration CLI. It refuses staging directories that overlap the source parent, the default production directory `~/.local/share/knowledge-agent-service`, are non-empty, are symlinks, or contain the source. Before running anything it copies the source into the staging directory as a consistent, integrity-checked, read-only snapshot (`legacy-source.sqlite3`, produced with the SQLite backup API from a `mode=ro&immutable=1` handle and then `chmod 0444`). It then runs the fixed command `<python> -m knowledge_agent_service.cli migrate-legacy-memory <SNAPSHOT> --apply` — using the guard's own interpreter (`sys.executable`), never a hardcoded `python` — with `KNOWLEDGE_AGENT_DATA_DIR` pointed at the staging directory. The importer never receives the real source path. The real source is SHA-256 verified unchanged before and after, including on importer failure or exception:
+
+```bash
+python3 scripts/legacy-db-guard.py apply --source /path/to/copilot-kb/memory.sqlite3 --staging-dir /tmp/legacy-staging
+```
+
+`apply` then runs the fixed internal command `<python> -m knowledge_agent_service.cli migrate-legacy-memory <SNAPSHOT> --apply` with `KNOWLEDGE_AGENT_DATA_DIR` pointed at the staging directory. The importer is an internal, guard-controlled command and is never run directly by normal users: it only accepts a guard-staged, read-only `legacy-source.sqlite3` snapshot located inside the staging data directory, and it refuses the production data directory. Do not run `apply` against a real database as a migration; a committed migration must be reviewed by a human first.
+
+The legacy importer is conservative and non-destructive. It imports legacy memory additively and idempotently into the SQLite memory store only:
+
+- Legacy `active` memory and all other non-`raw`/non-`rejected` records become `status=draft`, `memory_kind=candidate`, so they are never returned by default active retrieval.
+- Legacy `memory_kind=raw` stays `raw`, and legacy `status=rejected` becomes `rejected`.
+- Session contexts become `type=session` records with a fixed, content-free summary and the canonical context JSON preserved in `resolution`.
+- Evidence, source refs, scope, timestamps, and provenance (`imported_from`, `source_id`, `source_status`, `source_memory_kind`, `loading_policy`, `storage_targets`, `last_accessed_at`) are preserved. `loading_policy` is never treated as proof of Host injection.
+- The importer never writes vectors or Neo4j, never syncs Neo4j, and never generates embeddings.
+
+To inspect a legacy database, use `inspect`. To migrate one, use `apply` against a safe, empty staging directory. The internal importer is only ever invoked by the guard with a fixed argument list; it accepts no Neo4j flags.

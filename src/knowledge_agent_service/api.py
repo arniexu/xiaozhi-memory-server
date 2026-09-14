@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+from .capabilities import SkillProvider
 from .config import load_settings
 from .graph_store import Neo4jGraphStore
 from .memory_store import MemoryStore
@@ -14,6 +15,7 @@ settings = load_settings()
 memories = MemoryStore(settings.memory_db, settings.event_log)
 vectors = VectorStore(settings.vector_db)
 graph = Neo4jGraphStore(settings)
+skills = SkillProvider(memories)
 app = FastAPI(title="Knowledge Agent Service", version="0.1.6")
 
 
@@ -65,6 +67,22 @@ def health() -> dict:
 @app.get("/v1/stats")
 def stats() -> dict:
     return health()
+
+
+@app.get("/v1/capabilities/skills")
+def list_skills(query: str = "", limit: int = 20) -> dict:
+    """Read-only discovery of human-approved, evidence-backed skills."""
+    items = skills.list_skills(query=query, limit=limit)
+    return {"skills": items, "count": len(items)}
+
+
+@app.get("/v1/capabilities/skills/{skill_id}")
+def get_skill(skill_id: str) -> dict:
+    """Read one skill by stable ID; ``found`` is false for unknown or ineligible IDs."""
+    manifest = skills.get_skill(skill_id)
+    if manifest is None:
+        return {"found": False, "skill": None}
+    return {"found": True, "skill": manifest}
 
 
 @app.post("/v1/search")

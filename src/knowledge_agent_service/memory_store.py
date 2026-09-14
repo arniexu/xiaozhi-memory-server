@@ -171,6 +171,21 @@ class MemoryStore:
         by_id = {row["id"]: self._row(row) for row in rows}
         return [by_id[item] for item in memory_ids if item in by_id]
 
+    def get_unit(self, memory_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM memory_units WHERE id=?", (memory_id,)).fetchone()
+        return self._row(row) if row else None
+
+    def list_skill_candidates(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Rows that could be skills by lifecycle; capability/evidence are checked by the caller."""
+        bounded = max(1, min(int(limit), 1000))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM memory_units WHERE type='workflow' AND status='active' AND memory_kind='memory' ORDER BY updated_at DESC LIMIT ?",
+                (bounded,),
+            ).fetchall()
+        return [self._row(row) for row in rows]
+
     def stats(self) -> dict[str, int]:
         with self._connect() as connection:
             total = connection.execute("SELECT count(*) FROM memory_units").fetchone()[0]
