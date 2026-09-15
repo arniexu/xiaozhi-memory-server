@@ -147,6 +147,7 @@ class Neo4jGraphStore:
         cypher = """
             MATCH (n)
             WHERE coalesce(n.status, "active") = "active"
+              AND NONE(label IN labels(n) WHERE label IN ["Document", "DocumentChunk"])
             WITH n, labels(n) AS node_labels,
                  [key IN keys(n) WHERE
                     NONE(blocked IN $blocked WHERE toLower(key) CONTAINS blocked) AND

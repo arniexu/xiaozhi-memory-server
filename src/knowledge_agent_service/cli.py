@@ -26,6 +26,12 @@ def parser() -> argparse.ArgumentParser:
     )
     legacy.add_argument("snapshot", type=Path)
     legacy.add_argument("--apply", action="store_true")
+    reindex = commands.add_parser(
+        "reindex-cjk",
+        help="rebuild the CJK character index that gives Chinese queries substring recall",
+    )
+    reindex.add_argument("--dry-run", action="store_true")
+    reindex.add_argument("--batch-size", type=int, default=500)
     return result
 
 
@@ -36,6 +42,13 @@ def main() -> None:
         import uvicorn
 
         uvicorn.run("knowledge_agent_service.api:app", host=args.host or settings.host, port=args.port or settings.port)
+        return
+    if args.command == "reindex-cjk":
+        from .memory_store import MemoryStore
+
+        store = MemoryStore(settings.memory_db, settings.event_log)
+        report = store.backfill_cjk_index(batch_size=args.batch_size, dry_run=args.dry_run)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
         return
     if args.command == "migrate-extension":
         if args.sync_neo4j and not args.apply:

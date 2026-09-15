@@ -93,6 +93,7 @@ class Neo4jGraphStoreTests(unittest.TestCase):
 
         self.assertIn("toStringOrNull", driver.active_session.query)
         self.assertIn('coalesce(n.status, "active") = "active"', driver.active_session.query)
+        self.assertIn('NONE(label IN labels(n) WHERE label IN ["Document", "DocumentChunk"])', driver.active_session.query)
         self.assertEqual(driver.active_session.parameters["terms"], ["cpld", "reset"])
         self.assertEqual(results[0]["id"], "cpld:main")
         self.assertEqual(results[0]["summary"], "Main CPLD")

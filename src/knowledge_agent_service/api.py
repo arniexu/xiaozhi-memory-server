@@ -1,14 +1,37 @@
 from __future__ import annotations
 
+import os
+import subprocess
+from pathlib import Path
+
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from .capabilities import SkillProvider
 from .config import load_settings
 from .graph_store import Neo4jGraphStore
-from .memory_store import MemoryStore
+from .memory_store import MemoryStore, utc_now
 from .migration import migrate_continuity_data, migrate_document_data, migrate_extension_data
 from .vector_store import VectorStore
+
+
+SERVICE_VERSION = "0.1.7"
+
+
+def _running_commit() -> str:
+    override = os.getenv("KNOWLEDGE_AGENT_COMMIT", "").strip()
+    if override:
+        return override
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        return ""
 
 
 settings = load_settings()
@@ -16,15 +39,24 @@ memories = MemoryStore(settings.memory_db, settings.event_log)
 vectors = VectorStore(settings.vector_db)
 graph = Neo4jGraphStore(settings)
 skills = SkillProvider(memories)
-app = FastAPI(title="Knowledge Agent Service", version="0.1.6")
+app = FastAPI(title="Knowledge Agent Service", version=SERVICE_VERSION)
+STARTED_AT = utc_now()
+COMMIT = _running_commit()
 
 
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1)
     embedding: list[float] = []
     workspace_id: str = ""
+    workspace_ids: list[str] = []
     repo_id: str = ""
     session_id: str = ""
+    session_scope: str = "prefer"
+    scope_fallback: str = "global"
+    min_similarity: float = 0.35
+    include_retired: bool = False
+    per_document_limit: int = 2
+    page_boost: float | None = None
     limit: int = Field(default=8, ge=1, le=50)
 
 
@@ -57,6 +89,9 @@ class RelinkRequest(BaseModel):
 def health() -> dict:
     return {
         "status": "ok",
+        "version": SERVICE_VERSION,
+        "commit": COMMIT,
+        "started_at": STARTED_AT,
         "memory": memories.stats(),
         "vectors": vectors.stats(),
         "databases": {"memory": memories.database_info(), "vectors": vectors.database_info()},
@@ -67,6 +102,19 @@ def health() -> dict:
 @app.get("/v1/stats")
 def stats() -> dict:
     return health()
+
+
+@app.get("/v1/capabilities")
+def capabilities() -> dict:
+    """Report the code revision actually serving requests, so deployment drift is visible."""
+    endpoints = sorted({getattr(route, "path", "") for route in app.routes if str(getattr(route, "path", "")).startswith("/v1/")})
+    return {
+        "version": SERVICE_VERSION,
+        "commit": COMMIT,
+        "started_at": STARTED_AT,
+        "endpoints": endpoints,
+        "search_fields": sorted(SearchRequest.model_fields),
+    }
 
 
 @app.get("/v1/capabilities/skills")
@@ -87,15 +135,29 @@ def get_skill(skill_id: str) -> dict:
 
 @app.post("/v1/search")
 def search(request: SearchRequest) -> dict:
-    lexical = memories.search(
+    lexical = memories.search_with_meta(
         request.query,
         workspace_id=request.workspace_id,
+        workspace_ids=request.workspace_ids,
         repo_id=request.repo_id,
         session_id=request.session_id,
+        session_scope=request.session_scope,
+        scope_fallback=request.scope_fallback,
+        per_document_limit=request.per_document_limit,
+        page_boost=request.page_boost,
         limit=request.limit,
     )
-    semantic = vectors.search(request.embedding, limit=request.limit, source_kind="knowledge") if request.embedding else []
+    semantic = (
+        [
+            item
+            for item in vectors.search(request.embedding, limit=request.limit, source_kind="knowledge")
+            if item.get("score", 0.0) >= request.min_similarity
+        ]
+        if request.embedding
+        else []
+    )
     semantic_ids = [item["source_id"] for item in semantic]
+    semantic_memories = memories.get_many(semantic_ids, searchable_only=not request.include_retired)
     graph_results = []
     graph_error = ""
     if settings.neo4j_configured:
@@ -114,11 +176,16 @@ def search(request: SearchRequest) -> dict:
         except Exception as error:
             graph_error = type(error).__name__
     return {
-        "lexical": lexical,
+        "lexical": lexical["results"],
         "semantic": semantic,
-        "semantic_memories": memories.get_many(semantic_ids),
+        "semantic_memories": semantic_memories,
+        "semantic_suppressed": len(semantic_ids) - len(semantic_memories),
         "graph": graph_results,
         "graph_error": graph_error,
+        "scope_match": lexical["scope_match"],
+        "scope_suppressed": lexical["scope_suppressed"],
+        "match_mode": lexical["match_mode"],
+        "session_scope": lexical["session_scope"],
     }
 
 
@@ -157,7 +224,7 @@ def relink_documents(request: RelinkRequest) -> dict:
     """Rebuild deterministic document -> entity MENTIONS edges for stored chunks.
 
     Defaults to a dry run because Neo4j writes here are additive and the adapter
-    exposes no delete operation. Pass ``dry_run: false`` to persist the links.
+    exposes no delete operation. Pass ``dry_run: false`` to persist.
     """
 
     if not settings.neo4j_configured:

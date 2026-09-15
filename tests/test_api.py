@@ -10,10 +10,16 @@ from knowledge_agent_service import api
 class SearchApiTests(unittest.TestCase):
     def test_graph_failure_preserves_local_search_results(self) -> None:
         memory_store = Mock()
-        memory_store.search.return_value = [{"id": "lexical-1"}]
+        memory_store.search_with_meta.return_value = {
+            "results": [{"id": "lexical-1"}],
+            "scope_match": "exact",
+            "scope_suppressed": 0,
+            "match_mode": "all",
+            "session_scope": "prefer",
+        }
         memory_store.get_many.return_value = [{"id": "semantic-1"}]
         vector_store = Mock()
-        vector_store.search.return_value = [{"source_id": "semantic-1"}]
+        vector_store.search.return_value = [{"source_id": "semantic-1", "score": 0.9}]
         graph_store = Mock()
         graph_store.search.side_effect = RuntimeError("graph unavailable")
 
@@ -28,10 +34,12 @@ class SearchApiTests(unittest.TestCase):
             )
 
         self.assertEqual(result["lexical"], [{"id": "lexical-1"}])
-        self.assertEqual(result["semantic"], [{"source_id": "semantic-1"}])
+        self.assertEqual(result["semantic"], [{"source_id": "semantic-1", "score": 0.9}])
         self.assertEqual(result["semantic_memories"], [{"id": "semantic-1"}])
         self.assertEqual(result["graph"], [])
         self.assertEqual(result["graph_error"], "RuntimeError")
+        self.assertEqual(result["scope_match"], "exact")
+        self.assertEqual(result["semantic_suppressed"], 0)
 
     def test_continuity_import_forwards_source_scope_and_embeddings(self) -> None:
         configured = SimpleNamespace(neo4j_configured=False)
@@ -84,12 +92,74 @@ class SearchApiTests(unittest.TestCase):
         )
 
 
+class SemanticLifecycleTests(unittest.TestCase):
+    def test_retired_semantic_hits_are_suppressed_and_counted(self) -> None:
+        memory_store = Mock()
+        memory_store.search_with_meta.return_value = {
+            "results": [],
+            "scope_match": "global",
+            "scope_suppressed": 0,
+            "match_mode": "any",
+            "session_scope": "prefer",
+        }
+        memory_store.get_many.return_value = []
+        vector_store = Mock()
+        vector_store.search.return_value = [
+            {"source_id": "continuity:test-2026-05-27-01", "score": 1.0},
+            {"source_id": "memory:live", "score": 0.5},
+        ]
+
+        with (
+            patch.object(api, "settings", SimpleNamespace(neo4j_configured=False)),
+            patch.object(api, "memories", memory_store),
+            patch.object(api, "vectors", vector_store),
+        ):
+            result = api.search(api.SearchRequest(query="continuity write path", embedding=[1.0], limit=4))
+
+        self.assertEqual(result["semantic_memories"], [])
+        self.assertEqual(result["semantic_suppressed"], 2)
+        memory_store.get_many.assert_called_once_with(
+            ["continuity:test-2026-05-27-01", "memory:live"], searchable_only=True
+        )
+
+    def test_semantic_hits_below_the_similarity_floor_are_dropped(self) -> None:
+        memory_store = Mock()
+        memory_store.search_with_meta.return_value = {
+            "results": [],
+            "scope_match": "global",
+            "scope_suppressed": 0,
+            "match_mode": "any",
+            "session_scope": "prefer",
+        }
+        memory_store.get_many.return_value = []
+        vector_store = Mock()
+        vector_store.search.return_value = [
+            {"source_id": "memory:noise", "score": 0.22},
+            {"source_id": "memory:signal", "score": 0.51},
+        ]
+
+        with (
+            patch.object(api, "settings", SimpleNamespace(neo4j_configured=False)),
+            patch.object(api, "memories", memory_store),
+            patch.object(api, "vectors", vector_store),
+        ):
+            result = api.search(api.SearchRequest(query="tsod", embedding=[1.0], limit=4, min_similarity=0.35))
+
+        self.assertEqual([item["source_id"] for item in result["semantic"]], ["memory:signal"])
+
+
 class GraphApiTests(unittest.TestCase):
     """The graph endpoints write additively, so their defaults are part of the contract."""
 
     def test_search_scopes_document_links_to_entities_the_query_matched(self) -> None:
         memory_store = Mock()
-        memory_store.search.return_value = []
+        memory_store.search_with_meta.return_value = {
+            "results": [],
+            "scope_match": "global",
+            "scope_suppressed": 0,
+            "match_mode": "any",
+            "session_scope": "prefer",
+        }
         memory_store.get_many.return_value = []
         graph_store = Mock()
         graph_store.search.return_value = [{"id": "entity-1", "type": "graph:KnowledgeEntity"}]
@@ -110,7 +180,13 @@ class GraphApiTests(unittest.TestCase):
 
     def test_search_injects_no_document_link_when_query_matches_no_entity(self) -> None:
         memory_store = Mock()
-        memory_store.search.return_value = []
+        memory_store.search_with_meta.return_value = {
+            "results": [],
+            "scope_match": "global",
+            "scope_suppressed": 0,
+            "match_mode": "any",
+            "session_scope": "prefer",
+        }
         memory_store.get_many.return_value = []
         graph_store = Mock()
         graph_store.search.return_value = []
