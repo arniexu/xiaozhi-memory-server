@@ -44,3 +44,38 @@
 - 其余全部通过：26 条矩阵 0 失败、噪声行 0、p95 259ms、设备杂音未入库、稳定性一致。
 - graph 通道结果无 workspace 字段——已由调用方（xiaozhi provider 严格白名单）过滤，
   CR 侧如需支持可加开关（见建议 2）。
+
+## 标准语义化提案（2026-09-21，方向：修在源头、兼容演进）
+
+**原则**：不给调用方留“永久 workaround”；语义在 CR 侧归一；所有行为变更用**新参数保默认**，
+调用方显式 opt-in；下一大版本再评估翻默认。xiaozhi 的客户端增强（拆词/白名单）保留为
+防御层，CR 修复落地后用 battery/hard 回归证明可安全简化。
+
+### P1：scope 语义归一（消“exact 却含全局桶”的错位）
+- 请求新增 `strict_workspace: bool = False`：True 时不并入 `ws=''` 全局桶
+  （当前 `_match` 把 `ws=''` 写死在 exact 分支）；False 保持现行为（extension 不受影响）。
+- 响应诚实化：含全局桶结果时 `scope_match` 记为 `exact+global`（或新增
+  `global_included: N` 计数字段），不再用 `exact` 掩盖。
+- README 补术语表：scope = workspace × repo × session；`''` 的全局桶语义显式化。
+
+### P2：CJK 通道与 ASCII 对齐（本职的标准语义）
+- 现状：ASCII 有“AND+OR 并联”（`_search_once` 注释自述的设计哲学），CJK 只有
+  phrase AND 单通道 → 同库两种语义。按同一哲学补 CJK 的 OR 回退通道
+  （bigram `fts_any`，仅在 phrase 0 命中时启用，保住“无关查询 0 召回”）。
+- 验收：新增 CJK 用例入 tests/；xiaozhi battery+hard 全量回归（当前 16/16、26 条）。
+
+### P3：graph 通道可控
+- 请求新增 `include_graph: bool = True`（默认兼容）；xiaozhi 设 false，
+  消除“图实体无 workspace 渗入任意检索”。
+- 正解（后续）：graph 节点 upsert 时带 workspace 属性 + graph 检索过滤（含迁移）。
+
+### P4：更新/更正语义（已记 #4，优先级上升）
+- 旧值残留（爬山↔游泳）→ supersede 或时间序“最新/已更正”标注。
+
+### 兼容性矩阵
+| 变更 | 默认 | extension | xiaozhi |
+|---|---|---|---|
+| strict_workspace | False | 不传 → 现行为 | 传 True（白名单可退为防御） |
+| scope_match 诚实化 | — | 观察字段语义变化 | 无感 |
+| CJK OR 回退 | 建议默认开 | 中文召回提升（回归测试护航） | 拆词可评估简化 |
+| include_graph | True | 不传 → 现行为 | 传 False |
